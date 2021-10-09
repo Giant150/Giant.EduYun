@@ -12,6 +12,7 @@ using Giant.EduYun.Models;
 using System.IO;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 
 namespace Giant.EduYun.DownloadUI
 {
@@ -123,7 +124,7 @@ namespace Giant.EduYun.DownloadUI
             if (!Directory.Exists(path))
                 Directory.CreateDirectory(path);
 
-            var client = new WebClient();
+            var httpClient = new HttpClient();
             foreach (var kc in dy.KeChengList)
             {
                 var para = new string[] {
@@ -134,6 +135,33 @@ namespace Giant.EduYun.DownloadUI
                     "--disableDateInfo"
                 };
 
+                if (!String.IsNullOrEmpty(kc.LiveTaskDoc))
+                {
+                    Task.Factory.StartNew(async () =>
+                    {
+                        var url = new Uri(kc.LiveTaskDoc);
+                        var name = url.LocalPath.Substring(url.LocalPath.LastIndexOf("/") + 1);
+                        var result = await httpClient.GetAsync(kc.LiveTaskDoc);
+                        using (var fs = new FileStream($"{path}/{name}", FileMode.OpenOrCreate))
+                        {
+                            await result.Content.CopyToAsync(fs);
+                        }
+                    });
+                }
+                if (!String.IsNullOrEmpty(kc.HomeWorkDoc))
+                {
+                    Task.Factory.StartNew(async () =>
+                    {
+                        var url = new Uri(kc.HomeWorkDoc);
+                        var name = url.LocalPath.Substring(url.LocalPath.LastIndexOf("/") + 1);
+                        var result = await httpClient.GetAsync(kc.HomeWorkDoc);
+                        using (var fs = new FileStream($"{path}/{name}", FileMode.OpenOrCreate))
+                        {
+                            await result.Content.CopyToAsync(fs);
+                        }
+                    });
+                }
+
                 Process.Start(new ProcessStartInfo()
                 {
                     FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "N_m3u8DL-CLI_v2.9.7.exe"),
@@ -141,11 +169,6 @@ namespace Giant.EduYun.DownloadUI
                     Arguments = String.Join(" ", para),
                     CreateNoWindow = false
                 }).WaitForExit();
-
-                if (!String.IsNullOrEmpty(kc.LiveTaskDoc))
-                    client.DownloadFile(kc.LiveTaskDoc, Path.Combine(path, $"{kc.Name}(在线学习任务单).docx"));
-                if (!String.IsNullOrEmpty(kc.HomeWorkDoc))
-                    client.DownloadFile(kc.HomeWorkDoc, Path.Combine(path, $"{kc.Name}(课后练习).docx"));
             }
         }
     }
