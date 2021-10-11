@@ -25,8 +25,58 @@ namespace Giant.EduYun.DownloadUI
             InitializeComponent();
             this.RootFolder = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
             this.txtBaseDir.Text = this.RootFolder;
-            this.MainData = JsonSerializer.Deserialize<MainModel>(File.ReadAllText("MainData.json"));
-            this.cbXueDuan.Items.AddRange(this.MainData.XueDuanList.ToArray());
+            //this.MainData = JsonSerializer.Deserialize<MainModel>(File.ReadAllText("MainData.json"));
+            //this.cbXueDuan.Items.AddRange(this.MainData.XueDuanList.ToArray());
+
+            Task.Factory.StartNew(this.LoadData).ContinueWith(async (result) =>
+            {
+                var data = await result.Result;
+                var mi = new MethodInvoker(() =>
+                {
+                    this.MainData = data;
+                    this.cbXueDuan.Items.AddRange(this.MainData.XueDuanList.ToArray());
+                });
+                this.BeginInvoke(mi);
+            });
+
+        }
+
+        public async Task<MainModel> LoadData()
+        {
+            var url = "https://tongbu.eduyun.cn/tbkt/tbkthtml/ItemJsonData.js";
+            using (var httpClient = new HttpClient())
+            {
+                var js = await httpClient.GetStringAsync(url);
+                var index = js.IndexOf('{');
+                var json = js.Substring(index, js.Length - index - 1);
+                var yktModel = JsonSerializer.Deserialize<YktModel>(json);
+                var mainData = new MainModel();
+                mainData.XueDuanList = yktModel.xueDuan.Select((xd, xdi) => new XueDuanM()
+                {
+                    Name = $"{xd.xueDuanName}",
+                    Code = xd.xueDuanCode,
+                    NianJiList = xd.nianJiList.Select((nj, nji) => new NianJiM()
+                    {
+                        Name = $"{nj.njName}",
+                        Code = nj.njCode,
+                        XueKeList = nj.subjectsList.Select((xk, xki) => new XueKeM()
+                        {
+                            Name = $"{xk.xkName}",
+                            Code = xk.xkCode,
+                            DanYuanList = xk.danYuanList.Select((dy, dyi) => new DanYuanM()
+                            {
+                                Name = $"{dyi + 1}.{dy.danyuanName}",
+                                Code = dy.danyuanCode,
+                                KeChengList = dy.caseList.Select((kc, kci) => new KeChengM()
+                                {
+                                    Code = kc.caseCode
+                                }).ToList()
+                            }).ToList()
+                        }).ToList()
+                    }).ToList()
+                }).ToList();
+                return mainData;
+            }
         }
 
         private void button1_Click(object sender, EventArgs e)
@@ -98,7 +148,7 @@ namespace Giant.EduYun.DownloadUI
             this.cbDanYuan.Items.AddRange(xk.DanYuanList.ToArray());
         }
 
-        private void btnStart_Click(object sender, EventArgs e)
+        private async void btnStart_Click(object sender, EventArgs e)
         {
             var xdCode = this.cbXueDuan.SelectedItem == null ? "" : (this.cbXueDuan.SelectedItem as XueDuanM).Code;
             if (String.IsNullOrEmpty(xdCode)) return;
@@ -124,9 +174,21 @@ namespace Giant.EduYun.DownloadUI
             if (!Directory.Exists(path))
                 Directory.CreateDirectory(path);
 
+            var jsonOption = new JsonSerializerOptions() { WriteIndented = true };
             var httpClient = new HttpClient();
+            var kcIndex = 1;
             foreach (var kc in dy.KeChengList)
             {
+                Console.WriteLine($"开始分析{kc.Code}视频地址");
+                var htmlUrl = $"https://tongbu.eduyun.cn/tbkt/tbkthtml/wk/weike/{kc.Code.Substring(0, 6)}/{kc.Code}.html";
+                var html = await httpClient.GetStringAsync(htmlUrl);
+                var info = GetInfo(html);
+                kc.Name = $"{kcIndex}.{info.title}";
+                kc.VideoFile = info.video;
+                kc.LiveTaskDoc = info.liveTaskDoc;
+                kc.HomeWorkDoc = info.homeWorkDoc;
+                Console.WriteLine(JsonSerializer.Serialize(kc, jsonOption));
+
                 var para = new string[] {
                     Uri.EscapeUriString(kc.VideoFile),
                     $"--workDir \"{path}\"",
@@ -137,39 +199,67 @@ namespace Giant.EduYun.DownloadUI
 
                 if (!String.IsNullOrEmpty(kc.LiveTaskDoc))
                 {
-                    Task.Factory.StartNew(async () =>
+                    var url = new Uri(kc.LiveTaskDoc);
+                    var name = url.LocalPath.Substring(url.LocalPath.LastIndexOf("/") + 1);
+                    var result = await httpClient.GetAsync(kc.LiveTaskDoc);
+                    using (var fs = new FileStream($"{path}/{name}", FileMode.OpenOrCreate))
                     {
-                        var url = new Uri(kc.LiveTaskDoc);
-                        var name = url.LocalPath.Substring(url.LocalPath.LastIndexOf("/") + 1);
-                        var result = await httpClient.GetAsync(kc.LiveTaskDoc);
-                        using (var fs = new FileStream($"{path}/{name}", FileMode.OpenOrCreate))
-                        {
-                            await result.Content.CopyToAsync(fs);
-                        }
-                    });
+                        await result.Content.CopyToAsync(fs);
+                    }
                 }
                 if (!String.IsNullOrEmpty(kc.HomeWorkDoc))
                 {
-                    Task.Factory.StartNew(async () =>
+                    var url = new Uri(kc.HomeWorkDoc);
+                    var name = url.LocalPath.Substring(url.LocalPath.LastIndexOf("/") + 1);
+                    var result = await httpClient.GetAsync(kc.HomeWorkDoc);
+                    using (var fs = new FileStream($"{path}/{name}", FileMode.OpenOrCreate))
                     {
-                        var url = new Uri(kc.HomeWorkDoc);
-                        var name = url.LocalPath.Substring(url.LocalPath.LastIndexOf("/") + 1);
-                        var result = await httpClient.GetAsync(kc.HomeWorkDoc);
-                        using (var fs = new FileStream($"{path}/{name}", FileMode.OpenOrCreate))
-                        {
-                            await result.Content.CopyToAsync(fs);
-                        }
-                    });
+                        await result.Content.CopyToAsync(fs);
+                    }
                 }
 
-                Process.Start(new ProcessStartInfo()
+                await Process.Start(new ProcessStartInfo()
                 {
                     FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "N_m3u8DL-CLI_v2.9.7.exe"),
                     WorkingDirectory = path,
                     Arguments = String.Join(" ", para),
                     CreateNoWindow = false
-                }).WaitForExit();
+                }).WaitForExitAsync();
+
+                kcIndex++;
             }
+        }
+
+        private (string title, string video, string liveTaskDoc, string homeWorkDoc) GetInfo(string html)
+        {
+            var lines = html.Split("\r\n");
+
+            var title = lines.Where(w => w.Trim().StartsWith("<h3")).SingleOrDefault();
+            if (!String.IsNullOrEmpty(title))
+            {
+                var start = title.IndexOf(">");
+                var end = title.IndexOf('<', start);
+                title = title.Substring(start + 1, end - start - 1);
+            }
+
+            var video = lines.Where(w => w.Trim().StartsWith("file:")).SingleOrDefault();
+            if (!String.IsNullOrEmpty(video))
+                video = video.Trim().Replace("file: \"", "").Replace("\",", "");
+            var liveTaskDoc = lines.Where(w => w.Contains("在线学习任务单")).SingleOrDefault();
+            if (!String.IsNullOrEmpty(liveTaskDoc))
+            {
+                var start = liveTaskDoc.IndexOf("download=\"");
+                var end = liveTaskDoc.IndexOf("\" href=\"");
+                liveTaskDoc = liveTaskDoc.Substring(start + 10, end - start - 10);
+            }
+            var homeWorkDoc = lines.Where(w => w.Contains("课后练习")).SingleOrDefault();
+            if (!String.IsNullOrEmpty(homeWorkDoc))
+            {
+                var start = homeWorkDoc.IndexOf("download=\"");
+                var end = homeWorkDoc.IndexOf("\" href=\"");
+                homeWorkDoc = homeWorkDoc.Substring(start + 10, end - start - 10);
+            }
+            return (title, video, liveTaskDoc, homeWorkDoc);
         }
     }
 }
